@@ -4,17 +4,27 @@ export const ConfigDefaults = {
   logLevel: 'info',
   checked_by: '',
   timeout: {
-    connect: 10000,
+    open: 10000,
     read: 10000,
     write: 10000,
     info: 10000,
-    dns: 2000,
-    geo: 2000,
-    ssl: 2000
+    dns: 5000,
+    geo: 5000,
+    ssl: 5000
   },
   tor: {},
-  adapterOptions: {},
-  rejectOnConnectFailure: false
+  adapterOptions: {
+    websocket: {},
+    info: {},
+    geo: {},
+    dns: {},
+    ssl: {}
+  },
+  autoDepsIgnoredInResult: true,
+  removeFromResult: [],
+  failAllChecksOnConnectFailure: true,
+  rejectOnConnectFailure: false,
+  websocketAlwaysTerminate: true
 }
 
 /**
@@ -37,6 +47,32 @@ export class ConfigInterface extends Validator {
 
   set(key, value){
     this._set(key, value)
+  }
+
+  eq(key, value){
+    return this._get(key) === value
+  }
+
+  gt(key, value){
+    try { 
+      return this._get(key) > value
+    }
+    catch(e){
+      console.warn(`the value of "key" (arg 1) and the value (arg 2) must both be numbers (int, float)`)
+    }
+  }
+
+  lt(key, value){
+    try { 
+      return this._get(key) < value
+    }
+    catch(e){
+      console.warn(`the value of "key" (arg 1) and the value (arg 2) must both be numbers (int, float)`)
+    }
+  }
+
+  is(key, value){
+    return this.eq(key, value)
   }
   
 }

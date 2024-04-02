@@ -22,7 +22,7 @@ const filterRelaysProperties = (relays) => {
 
 const relayIsExpired = (relay) => {
   const lastPublished = rcache.cachetime.get.one( lastPublishedId(relay.url) );
-  const expiry = eval(config?.trawler?.publish?.expiry) || 4 * 60 * 60 * 10000;
+  const expiry = eval(config?.trawler?.publisher?.expiry) || 4 * 60 * 60 * 10000;
   if (!lastPublished) return true;
   if (lastPublished < new Date() - expiry) return true;
   return false;
@@ -42,9 +42,7 @@ export const publishOne = async (relay) => {
 
 export const publishMany = async (relays = []) => {
   relays = filterRelaysProperties(relays)
-  // console.log('before filter', relays.length)
   const filteredRelays = relays.filter(relayIsExpired);
-  // console.log('after filter', filteredRelays.length)
   if (!filteredRelays.length) return;
   await p30066.many(filteredRelays);
   await updatePublishTimes(filteredRelays);

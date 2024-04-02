@@ -14,7 +14,6 @@ export class Scheduler {
     const totalInterval = this.workers.reduce((sum, worker) => sum + worker.interval, 0);
     let cumulativeOffset = 0;
     this.workers.forEach(worker => {
-      // console.log(worker)
       this.analysis[worker.name] = {
           interval: worker.interval,
           offset: this.calculateBestOffset(worker, cumulativeOffset, totalInterval),
@@ -60,7 +59,6 @@ export class Scheduler {
           return (start2 < end1 || end2 > start1);
       }
   }
-
 
   createSchedules() {
     Object.keys(this.analysis).forEach(name => {

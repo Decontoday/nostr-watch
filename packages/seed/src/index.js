@@ -25,8 +25,6 @@ export const bootstrap = async (caller) => {
       api = emptyResponse(),
       events = emptyResponse()
 
-  console.log(opts.sources, opts.sources.includes('api'))
-
   if(opts.sources.includes('config'))
     configseed = [ config?.seed, Date.now() ]
 
@@ -70,7 +68,7 @@ export const relaysFromEvents = async (opts) => {
   const fetcher = NostrFetcher.withCustomPool(simplePoolAdapter(pool));
 
   const kinds = [ 30066 ]
-  const authors = opts.options.events.publisherPubKeys
+  const authors = opts.options.events.pubkeys
   const fetchFromRelays = opts.options.events.relays
 
   const events = await fetcher.fetchAllEvents(
@@ -101,12 +99,10 @@ export const relaysFromStaticSeed = async (opts) => {
     const data = yaml.load(fileContents);
     return data?.relays? [ data.relays, Date.now() ]: emptyResponse() //update Date to reflect modification date of seed file.
   } catch (e) {
-    console.error(e);
+    logger.err(e);
     return emptyResponse()
   }
 }
-
-
 
 export const relaysOnlineFromApi = async (opts) => {
   if(!opts?.remotes?.rest_api) throw new Error("relaysOnlineFromApi(): No nostr-watch rest_api specified in opts (host.com/v1 or host.com/v2)")

@@ -13,8 +13,9 @@ export const TrawlQueue = (qopts={}) => {
   return QueueInit('TrawlQueue', qopts)
 }
 
-export const NocapdQueue = (qopts={}) => {
-  return QueueInit('NocapdQueue', qopts)
+export const NocapdQueue = (name=null, qopts={}) => {
+  name = name? name: 'NocapdQueue'
+  return QueueInit(name, qopts)
 }
 
 export const SyncQueue = (qopts={}) => {
@@ -28,8 +29,6 @@ export const RestApiQueue = (qopts={}) => {
 export const QueueInit = (key, qopts={}) => {
   if($?.[key]) return $[key]
   const connection = RedisConnectionDetails()
-  log.debug(connection)
-  log.debug(qopts)
   qopts = { connection, ...qopts }
   const $Queue = new Queue(key, qopts)
   const $QueueEvents = new QueueEvents($Queue.name, { connection } )

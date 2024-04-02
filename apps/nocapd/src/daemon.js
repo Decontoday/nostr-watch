@@ -1,129 +1,208 @@
 import schedule from 'node-schedule'
+import Deferred from 'promise-deferred'
+
 import timestring from 'timestring'
 import chalk from 'chalk'
+import mapper from 'object-mapper'
 
+import { AnnounceMonitor } from '@nostrwatch/announce'
+import { NocapdQueue, BullMQ } from '@nostrwatch/controlflow'
+import Logger from '@nostrwatch/logger'
 import relaycache from '@nostrwatch/nwcache'
+import { bootstrap } from '@nostrwatch/seed'
+import { parseRelayNetwork, delay, loadConfig, RedisConnectionDetails } from "@nostrwatch/utils"
 
 import { NWWorker } from './classes/Worker.js'
-import { NocapdQueue, BullMQ } from '@nostrwatch/controlflow'
-const { Worker } = BullMQ
-
 import { NocapdQueues } from './classes/NocapdQueues.js'
-import { parseRelayNetwork, capitalize, loadConfig, RedisConnectionDetails } from "@nostrwatch/utils"
 
-import { bootstrap } from '@nostrwatch/seed'
+import migrate from './migrate/index.js'
 
-import Logger from '@nostrwatch/logger'
+const PUBKEY = process.env.DAEMON_PUBKEY
+const log = new Logger('@nostrwatch/nocapd')
 
-
-const log = new Logger('nocapd')
-const rcache = relaycache(process.env.NWCACHE_PATH || './.lmdb')
-
+let rcache
 let config 
+let $q
 
-const schedulePopulator = ($check) =>{
-  const rule = new schedule.RecurrenceRule();
-  rule.start = Date.now(); // Set the start time
-  rule.rule = `*/${Math.round($check.interval / 1000)} * * * * *`; // Set the frequency in seconds
-  return schedule.scheduleJob(rule, async () => { 
-    log.info(`running schedule for ${$check.slug}.populator`)
-    await $check.populator()
-  })
+const populateQueue = async () => { 
+  const resume = await $q.checker.populator() 
+  await delay(2000)
+  await $q.checker.resetProgressCounts()
+  resume()
+  // lastPopulate = Date.now()
 }
 
-const scheduleSyncRelays = async () =>{
-  if(!config?.nocapd?.seed?.options?.events) return
-  // await syncRelaysIn()
-  const interval = config?.nocapd?.seed?.options?.events?.interval || 60*60
-  log.info(`scheduling syncRelaysIn() every ${timestring(interval, 'm')} minutes`)
-  const rule = new schedule.RecurrenceRule();
-  rule.start = Date.now(); // Set the start time
-  rule.rule = `*/${timestring(interval)} * * * * *`; // Set the frequency in seconds
-  return schedule.scheduleJob(rule, syncRelaysIn )
+const checkQueue = async () => {
+  const counts = await $q.checker.counts()
+  const enqueue = counts.prioritized + counts.active
+  if(enqueue > 0) return 
+  log.debug(`drained: ${$q.queue.name}`)
+  populateQueue()
 }
 
-const syncRelaysIn = async () => {
-    const syncData = await bootstrap('nocapd')
-    const relays = syncData[0].map(r => { return { url: r, online: null, network: parseRelayNetwork(r), info: "", dns: "", geo: "", ssl: "" } })
-    const persisted = await rcache.relay.batch.insertIfNotExists(relays)
-    log.info(`synced ${persisted.length} relays`)
-    return persisted
-}
-
-const initChecks = async ($q) => {
-  const checks = {}
-  const EnabledChecks = enabledChecks() || []
-  for await ( const check of EnabledChecks ) {
-    try {
-      const nocapdConf = config?.nocapd || {}
-      checks[check] = new NWWorker(check, $q, rcache, {...nocapdConf, logger: new Logger(check), pubkey: process.env.DAEMON_PUBKEY })
-      schedulePopulator(checks[check])
-    }
-    catch(e){
-      log.err(`Error initializing ${check}: ${e.message}`)
-    }
-  }
-  await scheduleSyncRelays()
-  return checks
+const setIntervals = () => {
+  // intervalSyncRelays = setInterval( syncRelaysIn, timestring(config?.nocapd?.seed?.options?.events?.interval, "ms") || timestring("1h", "ms"))
+  schedulePopulator()
+  scheduleSyncRelays()
+  // intervalPopulate = setInterval( checkQueue, timestring( config?.nocapd?.checks?.options?.interval, "ms" ))
 }
 
 const initWorker = async () => {
-  const $q = new NocapdQueues({ pubkey: process.env.DAEMON_PUBKEY })
-  const { $Queue:$NocapdQueue, $QueueEvents:$NocapdQueueEvents } = NocapdQueue()
   const connection = RedisConnectionDetails()
-  await $NocapdQueue.pause()
-  await $NocapdQueue.drain()
   const concurrency = config?.nocapd?.bullmq?.worker?.concurrency? config.nocapd.bullmq.worker.concurrency: 1
-  log.info(`Worker concurrency: ${concurrency}`)
-  const $worker = new Worker($NocapdQueue.name, $q.route.bind($q), { concurrency, connection } )
-  await $worker.pause()
-  
-  $q.queue = $NocapdQueue
-  $q.events = $NocapdQueueEvents
-  $q.setWorker($worker)
-  $q.checks = await initChecks($q)
-  
-  await $q.populateAll()
-  await $q.queue.resume() 
-  
+  const ncdq = NocapdQueue(`nocapd/${config?.monitor?.slug}` || null)
+  $q = new NocapdQueues({ pubkey: PUBKEY, logger: new Logger('@nostrwatch/nocapd:queue-control'), redis: connection })
+  await $q
+    .set( 'queue'  , ncdq.$Queue )
+    .set( 'events' , ncdq.$QueueEvents )
+    .set( 'checker', new NWWorker(PUBKEY, $q, rcache, {...config, logger: new Logger('@nostrwatch/nocapd:worker'), pubkey: PUBKEY }) )
+    .set( 'worker' , new BullMQ.Worker($q.queue.name, $q.route_work.bind($q), { concurrency, connection, ...queueOpts() } ) )
+    // .drain()
+  // await $q.obliterate().catch(()=>{})
+
+  await $q.checker.drainSmart()
+  setIntervals()
+  // $q.events.on('drained', populateQueue)
+  await populateQueue()
+  $q.resume()
+  log.info(`initialized: ${$q.queue.name}`)
   return $q
 }
 
-const enabledChecks = () => {
-  const eman = []
-  return config?.nocapd?.checks?.enabled instanceof Array? config.nocapd.checks.enabled: 'all'
+const stop = async(signal) => {
+  log.info(`Received ${signal}`);
+  log.info(`Gracefully shutting down...`)
+  $q.worker.hard_stop = true
+  if(signal !== 'EAI_AGAIN'){
+    log.debug(`shutdown progress: $q.worker.pause()`)
+    await $q.worker.pause()
+    log.debug(`shutdown progress: $q.queue.drain()`)
+    await $q.queue.drain()
+  }
+  log.debug(`shutdown progress: await rcache.$.close()`)
+  await rcache.$.close()
+  log.debug(`shutdown progress: complete!`)
+}
+
+const maybeAnnounce = async () => {
+  log.info(`maybeAnnounce()`)
+  const map = {
+    "publisher.kinds": "kinds",
+    "nocapd.checks.options.timeout": "timeouts",
+    "nocapd.checks.options.expires": "frequency",
+    "nocapd.checks.enabled": "checks",
+    "monitor.geo": "geo",
+    "monitor.owner": "owner",
+    "publisher.to_relays": "relays",
+    "monitor.info": "profile"
+  }
+  const conf = mapper(config, map)
+  conf.frequency = timestring(conf.frequency, 's').toString()
+  const announce = new AnnounceMonitor(conf)
+  announce.generate()
+  announce.sign( process.env.DAEMON_PRIVKEY )
+  await announce.publish( conf.relays )
+}
+
+const scheduleSeconds = (name, intervalMs, cb) => {
+  log.info(`${name}: scheduling to fire every ${timestring(intervalMs, "s")} seconds`)
+  const rule = new schedule.RecurrenceRule();
+  const _interval = timestring(intervalMs, "s")
+  rule.start = Date.now(); 
+  rule.rule = `*/${_interval} * * * * *`; 
+  return schedule.scheduleJob(rule, async () => await cb())
+}
+
+const schedulePopulator = () =>{
+  const name = "checkQueue()"
+  const intervalMs = $q.checker.interval
+  const job = async () => { 
+    log.info(chalk.grey.italic(`=== scheduled population check for ${$q.queue.name} every ${timestring(intervalMs, "s")} seconds ===`))
+    await checkQueue()
+  }
+  return scheduleSeconds(name, intervalMs, job)
+}
+
+const scheduleSyncRelays = () =>{
+  const name = "syncRelaysIn()"
+  if(!config?.nocapd?.seed?.options?.events) return
+  const intervalMs = config.nocapd.seed.options.events.interval
+  log.info(`syncRelaysIn(): scheduling to fire every ${timestring(intervalMs, "s")} seconds`)
+  const job = async () => {
+    await syncRelaysIn() 
+  }
+  return scheduleSeconds(name, intervalMs, job)
+}
+
+const syncRelaysIn = async () => {
+    log.debug(`syncRelaysIn()`)
+    const syncData = await bootstrap('nocapd')
+    log.debug(`syncRelaysIn(): found ${syncData[0].length} *maybe new* relays`)
+    const relays = syncData[0].map(r => { return { url: new URL(r).toString(), online: null, network: parseRelayNetwork(r), info: "", dns: "", geo: "", ssl: "" } })
+    const persisted = await rcache.relay.batch.insertIfNotExists(relays)
+    if(persisted.length === 0) return 0
+    log.info(chalk.yellow.bold(`Persisted ${persisted.length} new relays`))
+    return persisted
+}
+
+const queueOpts = () => {
+  return {
+    lockDuration: 2*60*1000
+  }
 }
 
 const maybeBootstrap = async () => {
-  log.info(`Boostrapping..`)
+  log.info(`Bootstrapping...`)
   if(rcache.relay.count.all() === 0){
     const persisted = await syncRelaysIn()
     log.info(`Boostrapped ${persisted.length} relays`)
   }
 }
 
-const header = () => {
-  console.log(chalk.bold(`
+const globalHandlers = () => {
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  
+  signals.forEach(signal => {
+    process.on(signal, async () => await gracefulShutdown(signal));
+  });
 
-@nostrwatch/  
-                                                   dP
-                                                   88
-88d888b. .d8888b. .d8888b. .d8888b. 88d888b. .d888b88
-88'  \`88 88'  \`88 88'  \`"" 88'  \`88 88'  \`88 88'  \`88
-88    88 88.  .88 88.  ... 88.  .88 88.  .88 88.  .88
-dP    dP \`88888P' \`88888P' \`88888P8 88Y888P' \`88888P8
-                                    88               
-                                    dP               
+  process.on('uncaughtException', async (error) => {
+    console.error('Uncaught Exception:', error);
+  });
+  
+  process.on('unhandledRejection', async (reason, promise) => {
+    console.error('Unhandled Rejection:', promise.catch(console.error));
+  });  
 
-`))
+  $q.worker.on('error', async (err) => {
+    console.error('Worker Error: ', err);
+    if(err?.code === 'EAI_AGAIN' || JSON.stringify(err).includes('EAI_AGAIN')){
+      const code = err?.code? err.code: '[code undefined!]'
+      gracefulShutdown(code)
+    }
+  })
+}
+
+async function gracefulShutdown(signal) {
+  console.log(`Received ${signal}`);
+  await stop(signal)
+  process.exit(9);
 }
 
 export const Nocapd = async () => {
-  header()
-  config = await loadConfig()
+  
+  
+  config = await loadConfig().catch( (err) => { log.err(err); process.exit() } )
+  await delay(2000)
+  rcache = relaycache(process.env.NWCACHE_PATH || './.lmdb')
+  await migrate(rcache)
+  await delay(1000)
+  await maybeAnnounce()
   await maybeBootstrap()
-  const $q = await initWorker()
+  $q = await initWorker()
+  globalHandlers()
   return {
-    $q
-  }
+    $q,
+    stop
+  } 
 }

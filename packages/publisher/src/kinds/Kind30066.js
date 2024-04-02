@@ -1,19 +1,20 @@
 import mapper from 'object-mapper'
 import ngeohash from 'ngeohash'
+// import { ParseEvent } from '@nostrwatch/parse'
 
-import { Publisher } from '../Publisher.js'
+import { PublisherNocap } from '../Publisher.js'
 
-export class Kind30066 extends Publisher { 
+export class Kind30066 extends PublisherNocap { 
   constructor(){
-    super()
-    this.kind = 30066
-    this.discoverable = ['d']
+    const KIND = 30066
+    super(KIND)
+    this.kind = KIND
+    this.discoverable = {tags: 'd'}
     this.human_readable = true
     this.machine_readable = true
   }
 
   generateEvent(data){
-
     let tags = Kind30066.generateTags(data)
     const content = Kind30066.generateContent(data)
     
@@ -39,7 +40,7 @@ export class Kind30066 extends Publisher {
   static generateTags(data){
     let tags = []
 
-    const isRtt = data?.connect?.data
+    const isRtt = data?.open?.data
     const isDns =  Object.keys(data?.dns?.data || {})?.length > 0
     const isInfo =  Object.keys(data?.info?.data || {})?.length > 0
     const isGeo =  Object.keys(data?.geo?.data || {})?.length > 0
@@ -53,8 +54,8 @@ export class Kind30066 extends Publisher {
     if(data?.network)
       tags.push( ['other', 'network', data.network] )
     if(isRtt) {
-      if(data.connect?.data)
-        tags.push([ 'rtt', 'open', data.connect.duration.toString() ])
+      if(data.open?.data)
+        tags.push([ 'rtt', 'open', data.open.duration.toString() ])
       if(data?.read?.data)
         tags.push([ 'rtt', 'read', data.read.duration.toString() ])
       if(data?.write?.data)
@@ -136,19 +137,16 @@ export class Kind30066 extends Publisher {
           if(val instanceof Number || isFloat(val)){
             tags.push( [ 'geo', prop, val.toString() ] )
           }   
-        }
-
-        
+        }        
     }
 
-  
     if(isSsl){
       const sslIgnore = ['valid', 'days_remaining']
-      data.ssl.data = transformSslResult(data.ssl.data)
-      for(const prop in data.ssl.data){
+      const sslData = transformSslResult(data.ssl.data)
+      for(const prop in sslData){
         if(sslIgnore.includes(prop)) continue
 
-        const val = data.ssl.data[prop]
+        const val = sslData[prop]
 
         if(val instanceof Array){
           tags.push( [ 'ssl', prop, ...val ] )
@@ -171,11 +169,18 @@ export class Kind30066 extends Publisher {
         }
       }
     }
-    
-    const countRttTags = tags.filter( tag => tag[0] === 'rtt' )?.length 
 
     return tags
   }
+
+  _parse(){
+    Kind30066.parse(this.event)
+  }
+
+  static parse(event){
+    return ParseEvent.groupedKeys(event)
+  }
+  
 }
 
 const transformGeoResult = geo => {  

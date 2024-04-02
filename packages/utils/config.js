@@ -1,6 +1,5 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
-import path from 'path'
 import yaml from 'js-yaml';
 
 let config
@@ -26,19 +25,17 @@ export const loadConfigSync = function() {
     const fileContents = fs.readFileSync(configPath, 'utf8');
     return yaml.load(fileContents);
   } catch (e) {
-      console.error(e);
-      return {};
+      console.error("loadConfigSync Error: ", e);
+      throw new Error('config.yaml not found')
   }
 };
 
 export const loadConfig = async function() {
-  try {
-    const configPath = process.env.CONFIG_PATH || './config.yaml';
-    if (!configPath) return {};
-    const fileContents = await fsp.readFile(configPath, 'utf8');
-    return yaml.load(fileContents);
-  } catch (e) {
-    console.error(e);
-    return {};
+  const handle_error = (e) => { 
+    return new Error('config.yaml not found')
   }
+  const configPath = process.env.CONFIG_PATH || './config.yaml';
+  if (!configPath) return {};
+  const fileContents = await fsp.readFile(configPath, 'utf8').catch(handle_error);
+  return yaml.load(fileContents);
 };

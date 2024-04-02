@@ -18,16 +18,104 @@ async function writeObjectToFile(obj) {
 
   try {
     await fs.writeFile(fileName, jsonContent);
-    // console.log(`File ${fileName} has been written.`);
   } catch (error) {
     console.error('Error writing file:', error);
   }
 }
 
+
 export class Publisher { 
 
+  constructor(key="generic"){
+    this.logger = new Logger(`publisher[${key}]`)
+  }
+
+  tpl(){
+    if(typeof this?.kind === 'undefined' || this.kind === null)
+      throw new Error('tpl(): this.kind must be defined')
+    return {
+      pubkey: process.env.DAEMON_PUBKEY,
+      kind: this.kind,
+      content: "",
+      tags: [],
+      created_at: Math.round(Date.now()/1000)
+    }
+  }
+
+  // generateEvent(data){
+  //   this.logger.warn('generateEvent(): has not been implemented by subclass, using generic functions')
+  //   const staticClass = eval(`kind${this.kind}`)
+  //   let tags = [], 
+  //       content = ""
+  //   if(staticClass?.generateTags)
+  //     tags = Kind30066.generateTags(data)
+    
+  //   if(staticClass?.generateContent)
+  //     content = Kind30066.generateContent(data)
+    
+  //   const event = {
+  //     ...this.tpl(),
+  //     content,
+  //     tags
+  //   }
+
+  //   return event
+  // }
+  
+
+  generateEvent(){
+    return this.tpl(30066)
+  }
+
+  generateEvents(relays){
+    const unsignedEvents = []
+    relays.forEach( relay => {
+      unsignedEvents.push(this.generateEvent(relay))
+    })
+    return unsignedEvents
+  }
+
+  signEvent(event){
+    event.id = getEventHash(event)
+    event.sig = getSignature(event, process.env.DAEMON_PRIVKEY || "")
+    const valid = validateEvent(event) && verifySignature(event)
+    if(!valid)
+      throw new Error('generateEvent(): event does not validate')  
+    return event
+  }
+
+  signEvents(unsignedEvents){
+    const signedEvents = []
+    unsignedEvents.forEach( event => {
+      signedEvents.push(this.signEvent(event))
+    })
+    return signedEvents
+  }
+
+  async publishEvent(signedEvent){
+    // writeObjectToFile(signedEvent);
+    const pool = new SimplePool();
+    const relays = config.publisher.to_relays
+    let pubs = pool.publish(relays, signedEvent)
+    // await Promise.all( pubs ).catch( e => { log.error(`publishEvent(): Error: ${e}`) })
+    return Promise.allSettled( pubs ).catch( e => { log.error(`publishEvent(): Error: ${e}`) } )
+  }
+
+  async publishEvents(signedEvents){
+    let publishes = []
+    for await ( const signedEvent of signedEvents ) {
+      publishes.push( await this.publishEvent(signedEvent) )
+    }
+    return publishes
+  }
+}
+
+
+export class PublisherNocap extends Publisher {
+  
   constructor(){
-    this.logger = new Logger('publisher')
+    super()
+    this.logger = new Logger('publisher[nocap]')
   }
 
   async many(relays){
@@ -42,7 +130,7 @@ export class Publisher {
         const unsignedEvent = this.generateEvent(relay)
         signedEvents.push(this.signEvent(unsignedEvent))
       }
-      await this.publishEvents(signedEvents).catch(console.error)
+      await this.publishEvents(signedEvents).catch( e => { log.error(`PublisherNocap::many(): Error: ${e}`) })
     }
   }
 
@@ -56,67 +144,4 @@ export class Publisher {
     this.logger.debug(`one(): published event`)
   }
 
-  tpl(){
-    if(!this?.kind)
-      throw new Error('tpl(): this.kind must be defined')
-    return {
-      pubkey: process.env.DAEMON_PUBKEY,
-      kind: this.kind,
-      content: "",
-      tags: [],
-      created_at: Math.round(Date.now()/1000)
-    }
-  }
-
-  generateEvent(){
-    this.logger.warn('generateEvent(): has not been implemented by subclass, generating a blank event')
-    return this.tpl(30066)
-  }
-
-  generateEvents(relays){
-    const unsignedEvents = []
-    relays.forEach( relay => {
-      unsignedEvents.push(this.generateEvent(relay))
-    })
-    return unsignedEvents
-  }
-
-  signEvent(unsignedEvent){
-    const signedEvent = unsignedEvent
-    signedEvent.id = getEventHash(signedEvent)
-    signedEvent.sig = getSignature(signedEvent, process.env.DAEMON_PRIVKEY)
-    const valid = validateEvent(signedEvent) && verifySignature(signedEvent)
-    if(!valid)
-      throw new Error('generateEvent(): event does not validate')  
-    // if(signedEvent.tags.filter( tag => tag[0]==='s' && tag[1]==='online' ).length > 0) console.log(signedEvent)
-    return signedEvent
-  }
-
-  signEvents(unsignedEvents){
-    const signedEvents = []
-    unsignedEvents.forEach( event => {
-      signedEvents.push(this.signEvent(event))
-    })
-    return signedEvents
-  }
-
-  async publishEvent(signedEvent){
-    // writeObjectToFile(signedEvent);
-    console.log
-    const pool = new SimplePool();
-    const relays = config.publisher.to_relays
-    let pubs = pool.publish(relays, signedEvent)
-    await Promise.all( pubs )
-    // console.log(pubs)
-    // process.exit()
-    return Promise.all( pubs )
-  }
-
-  async publishEvents(signedEvents){
-    let publishes = []
-    for await ( const signedEvent of signedEvents ) {
-      publishes.push( await this.publishEvent(signedEvent) )
-    }
-    return publishes
-  }
 }

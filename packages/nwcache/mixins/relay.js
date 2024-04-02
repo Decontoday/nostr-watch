@@ -233,7 +233,7 @@ const relay_get = (db) => {
   const fns = {
     one(relay) {
       if(typeof relay !== 'string')
-        throw new Error("Relay.get.one(): Argument must be a string")
+        throw new Error(`Relay.get.one(): Argument must be a string: [${relay}: ${typeof relay}] -> [${relay.toString()}: string]`)
       if(!relay.startsWith('Relay@'))
         relay = relayId(relay)
       return db.$.get(relay) || false
@@ -268,7 +268,6 @@ const relay_get = (db) => {
       const paymentRequired = db.check.info.get.all().filter( rci => rci?.data?.limitation && rci?.data?.limitation?.payment_required && rci.data.limitation.payment_required === true ).map( res => [ res.relay_id, res['#'] ] ) 
       const relayIds = paymentRequired.map( r => r[0] )
       const relayInfoIds = paymentRequired.map( r => r[1] )
-      console.log('ids', relayIds)
       let relays = this.many(relayIds)
       relays = relays.filter( relay => relay.info.ref )
 
